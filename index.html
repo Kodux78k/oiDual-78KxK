@@ -4,11 +4,8 @@
   <meta charset="utf-8" />
   <title>dual.Infodose — Fusion Unificado (Chat Cinematográfico + Fusion HUD)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#05070a">
-  <!-- Fonts -->
-  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;600;700;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="manifest" href="./manifest.json">
-
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#05070a">
 <link rel="apple-touch-icon" href="./icon-192.png">
 
 <script>
@@ -17,7 +14,20 @@
       .then(() => console.log('Service Worker Registered'));
   }
 </script>
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;600;700;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 
+  <!-- External Libraries (CDN) -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
+<!-- Markdown renderer + sanitizer + syntax highlight -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.1/markdown-it.min.js"></script>
+<!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/2.4.0/purify.min.js"></script> -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<!-- opcional: prism extras se quiser linguagens extras -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
   <style>
     /* ====== Combined variables & base ====== */
     :root{
@@ -49,8 +59,22 @@
       padding:20px; overflow:hidden; display:flex; flex-direction:column; align-items:center;
     }
 
+/* Markdown body styles */
+.markdown-body{font-family:var(--font-ui);color:var(--text-dark);line-height:1.55}
+.markdown-body h1, .markdown-body h2, .markdown-body h3 { color: var(--accent); margin:0.4rem 0; }
+.markdown-body p { margin:0.55rem 0; color:rgba(255,255,255,0.92); }
+.markdown-body ul, .markdown-body ol { margin:0.4rem 0 0.8rem 1.1rem; color:rgba(255,255,255,0.9); }
+.markdown-body strong { color:#fff; font-weight:700 }
+.markdown-body em { font-style:italic; color:rgba(255,255,255,0.85) }
+.markdown-body blockquote { border-left:3px solid rgba(255,255,255,0.06); padding:8px 12px; background:rgba(255,255,255,0.02); color:rgba(255,255,255,0.85); margin:0.6rem 0; border-radius:6px }
+.markdown-body pre { background: rgba(0,0,0,0.6); padding:12px; border-radius:8px; overflow:auto; font-family:var(--font-code); font-size:0.85rem; margin:0.6rem 0; }
+.markdown-body code { background: rgba(255,255,255,0.03); padding:2px 6px; border-radius:6px; font-family:var(--font-code); color:#fff }
+.response-block .meta { z-index:6 } /* mantém botão cristal por cima */
+.response-block .block-actions { position:absolute; left:12px; bottom:12px; display:flex; gap:8px; }
+.copy-block-btn{ background:transparent; border:1px solid rgba(255,255,255,0.06); padding:6px 8px; border-radius:8px; color:var(--accent); cursor:pointer }
+
     /* ====== Particles / Ambient ====== */
-    #particles-js{position:absolute;inset:0;z-index:0;pointer-events:none}
+    #particles-js{position:absolute;inset:0;z-index:10;pointer-events:none}
     .ambient-light{position:fixed;inset:0;z-index:0;pointer-events:none}
     .blob{position:absolute;border-radius:50%;filter:blur(100px);opacity:0.14;animation:float 25s infinite alternate ease-in-out}
     .blob-1{width:60vw;height:60vw;background:var(--neon-cyan);top:-20%;left:-20%}
@@ -192,7 +216,7 @@
       transition: width 0.5s var(--ease-smooth), height 0.5s var(--ease-smooth), border-radius 0.5s var(--ease-smooth), transform 0.4s var(--ease-smooth), opacity 0.4s;
       will-change: transform, width, height, border-radius, left, top;
       touch-action: none;
-      z-index:99999 !important;
+      z-index:12 !important;
     }
     .fusion-card.active{opacity:1;transform:translateY(0) scale(1);}
     
@@ -639,73 +663,108 @@
       } catch (e) { /* silent */ }
     }
 
-    const renderPaginatedResponse = text => {
-      speechSynthesis.cancel();
-      autoAdvance = true;
-      const respEl = document.getElementById('response');
-      if (!respEl) return;
-      respEl.querySelectorAll('.page:not(.initial)').forEach(p=>p.remove());
-      pages = [];
-      const groups = splitBlocks(text);
-      const controls = respEl.querySelector('.response-controls');
-      const titles = ['🎁 Recompensa Inicial','👁️ Exploração e Curiosidade','⚡ Antecipação Vibracional'];
+    /* === Markdown-enabled paginated renderer === */
+const md = window.markdownit({
+  html: false,         // desativa HTML cru; se quiser permitir HTML, mude para true
+  linkify: true,
+  typographer: true
+});
 
-      groups.forEach((tris, gi) => {
-        const page = createEl('div', gi===0?'page active':'page');
-        tris.forEach((body, j) => {
-          const cls = j===0?'intro': j===1?'middle':'ending';
-          const b = createEl('div','response-block '+cls,`
-            <h3>${titles[j]}</h3><p>${body}</p>
-          `);
-          const meta = createEl('div','meta');
-          const crystalBtn = createEl('button','crystal-btn','✶');
-          crystalBtn.title = 'Cristalizar essa mensagem';
-          crystalBtn.addEventListener('click', (ev)=>{
-            ev.stopPropagation();
-            cristalizar({ title: titles[j], content: body });
-            crystalBtn.innerText = '✓';
-            setTimeout(()=> crystalBtn.innerText = '✶', 1200);
-          });
-          meta.appendChild(crystalBtn);
-          b.appendChild(meta);
+const renderPaginatedResponse = text => {
+  speechSynthesis.cancel();
+  autoAdvance = true;
+  const respEl = document.getElementById('response');
+  if (!respEl) return;
+  respEl.querySelectorAll('.page:not(.initial)').forEach(p=>p.remove());
+  pages = [];
+  const groups = splitBlocks(text);
+  const titles = ['🎁 Recompensa Inicial','👁️ Exploração e Curiosidade','⚡ Antecipação Vibracional'];
 
+  // toggle sanitization
+  const useSanitize = true; // <<== false se preferir não usar DOMPurify
+
+  groups.forEach((tris, gi) => {
+    const page = createEl('div', gi===0?'page active':'page');
+    tris.forEach((body, j) => {
+      const cls = j===0?'intro': j===1?'middle':'ending';
+      // render markdown -> html
+      let rendered = md.render(body || '');
+      if (useSanitize && window.DOMPurify) rendered = DOMPurify.sanitize(rendered);
+      // create block container
+      const b = createEl('div','response-block '+cls, `
+        <div class="markdown-body">${rendered}</div>
+      `);
+
+      // meta & actions
+      const meta = createEl('div','meta');
+      const crystalBtn = createEl('button','crystal-btn','✶');
+      crystalBtn.title = 'Cristalizar essa mensagem';
+      crystalBtn.addEventListener('click',(ev)=>{ ev.stopPropagation(); cristalizar({ title: titles[j], content: body }); crystalBtn.innerText='✓'; setTimeout(()=> crystalBtn.innerText='✶',1200); });
+      meta.appendChild(crystalBtn);
+      b.appendChild(meta);
+
+      // block-level actions bottom-left (copy)
+      const actions = createEl('div','block-actions');
+      const copyBtn = createEl('button','copy-block-btn','Copiar');
+      copyBtn.addEventListener('click',(ev)=>{
+        ev.stopPropagation();
+        // prefer copying original markdown; but copy rendered plain text if needed
+        navigator.clipboard.writeText(body || b.innerText).then(()=> showToaster('Bloco copiado','success'));
+      });
+      actions.appendChild(copyBtn);
+      b.appendChild(actions);
+
+      // click behavior: speak / expand / callAI (mantendo tua lógica)
+      b.dataset.state = '';
+      b.addEventListener('click', () => {
+        if (!b.dataset.state) {
+          speechSynthesis.cancel();
+          // pega texto plano (sem tags)
+          const plain = Array.from(b.querySelectorAll('p, li')).map(n => n.innerText).join(' ');
+          speakText(plain);
+          b.classList.add('clicked');
+          b.dataset.state = 'spoken';
+        } else {
+          b.classList.add('expanded');
           b.dataset.state = '';
-          b.addEventListener('click', () => {
-            if (!b.dataset.state) {
-              speechSynthesis.cancel();
-              speakText(body);
-              b.classList.add('clicked');
-              b.dataset.state = 'spoken';
-            } else {
-              b.classList.add('expanded');
-              b.dataset.state = '';
-              if (!assistantEnabled) {
-                assistantEnabled = true;
-                localStorage.setItem('di_assistantEnabled','1');
-                if (training && trainingActive) conversation.unshift({ role:'system', content: training });
-                updateToggleUI();
-              }
-              const blockText = `${titles[j]}\n\n${body}`;
-              showLoading('Pulso em Expansão...');
-              speechSynthesis.cancel();
-              speakText('Pulso em Expansão...');
-              conversation.push({ role:'user', content: blockText });
-              callAI();
-            }
-          });
-          b.addEventListener('animationend', e => { if (e.animationName==='clickPulse') b.classList.remove('clicked'); });
-          page.appendChild(b);
-        });
-        page.appendChild(createEl('p','footer-text',`<em>Do seu jeito. <strong>Sempre</strong> único. <strong>Sempre</strong> seu.</em>`));
-        if (controls) respEl.insertBefore(page, controls);
-        pages.push(page);
+          if (!assistantEnabled) {
+            assistantEnabled = true;
+            localStorage.setItem('di_assistantEnabled','1');
+            if (training && trainingActive) conversation.unshift({ role:'system', content: training });
+            updateToggleUI();
+          }
+          const blockText = `${titles[j]}\n\n${body}`;
+          showLoading('Pulso em Expansão...');
+          speechSynthesis.cancel();
+          speakText('Pulso em Expansão...');
+          conversation.push({ role:'user', content: blockText });
+          callAI();
+        }
       });
 
-      currentPage = 0;
-      const pi = document.getElementById('pageIndicator');
-      if (pi) pi.textContent = `1 / ${pages.length}`;
-      speakPage(0);
-    };
+      b.addEventListener('animationend', e => { if (e.animationName==='clickPulse') b.classList.remove('clicked'); });
+
+      page.appendChild(b);
+    });
+
+    page.appendChild(createEl('p','footer-text',`<em>Do seu jeito. <strong>Sempre</strong> único. <strong>Sempre</strong> seu.</em>`));
+    const controls = respEl.querySelector('.response-controls');
+    if (controls) respEl.insertBefore(page, controls);
+    pages.push(page);
+
+    // after DOM insertion, highlight code blocks in this page
+    setTimeout(()=> {
+      try {
+        page.querySelectorAll('pre code').forEach(el => { Prism.highlightElement(el); });
+      } catch(e) {}
+    }, 40);
+  });
+
+  currentPage = 0;
+  const pi = document.getElementById('pageIndicator');
+  if (pi) pi.textContent = `1 / ${pages.length}`;
+  speakPage(0);
+};
 
     const speakPage = i => {
       const page = pages[i];
