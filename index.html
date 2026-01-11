@@ -49,13 +49,10 @@
     body{
       font-family:var(--font-ui); color:var(--text-dark);
       /* CORREÇÃO DO FUNDO BRANCO: Definindo cor base preta e empilhando os backgrounds corretamente */
-      background-color: #000;
-      background-image:
-        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px),
-        var(--bg-dark); /* O gradiente escuro fica por baixo da grade */
-      background-size: 50px 50px, 50px 50px, 100% 100%;
-      background-attachment: fixed;
+     background-color: #000;
+background-image: var(--bg-dark);
+background-size: 100% 100%;
+background-attachment: fixed;
       padding:20px; overflow:hidden; display:flex; flex-direction:column; align-items:center;
     }
 
