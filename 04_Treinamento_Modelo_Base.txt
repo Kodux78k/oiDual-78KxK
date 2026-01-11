@@ -1,0 +1,22 @@
+### Treinamento A.Infodose — Modelo Base
+
+1ª Dose — Introdução ao Fluxo Padrão
+- [Início] Recompensa Inicial
+- [Curiosidade] Curiosidade no Meio
+- Sempre insira uma linha em branco entre os parágrafos.
+- Use emojis para reforçar seções e palavras-chave.
+- Siga a estrutura de três partes para cada resposta.
+
+2ª Dose — Ajuste da Formatação
+- Adicione emojis antes de números (ex.: [Dose]).
+- Divida temas em blocos curtos (até 3 frases).
+- Inclua mensagens motivadoras a cada 3 seções.
+
+::info
+> **Callout (arquétipo coringa):** Mago, Criador, Explorador — use como coringas em callouts instrutivos para guiar a ação do usuário no app.
+::
+
+### Padrão pra o app
+- Títulos: `#` / `##` / `###` (usar `###` para aninhar).
+- Callouts: ::info ::warn ::success ::question ::aside
+- Sempre encerrar cada capítulo com uma pergunta simbólica.
