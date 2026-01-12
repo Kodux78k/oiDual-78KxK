@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pwa-dual.kxk-v2';
+const CACHE_NAME = 'pwa-dual.78kxk-v3';
 const ASSETS = [
     './',
     'index.html',
