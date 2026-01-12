@@ -580,557 +580,7 @@ background-attachment: fixed;
       </div>
     </div>
   </div>
-
-  <!-- Scripts: Chat (keeps globals expected by sync patch) -->
-  <script>
-    /* ---------- Constantes iniciais (Chat module - globals intentionally) ---------- */
-    const TRAINING_FILE_FALLBACK = 'Super_Treinamento_Universal_Dual_Infodose_v1-28.txt';
-    const API_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
-    const TEMPERATURE = 0.2;
-
-    // estado (global; sync patch depends on these names)
-    let training = '';
-    let trainingFileName = '';
-    let assistantEnabled = false;
-    let trainingActive = true; // se false, não inclui 'system' no conversation
-    let conversation = [];
-    let pages = [], currentPage = 0, autoAdvance = true;
-
-    // configs persistidas (globals)
-    let apiKey = localStorage.getItem('di_apiKey') || '';
-    let modelName = localStorage.getItem('di_modelName') || 'meta-llama/llama-3.1-405b-instruct:free';
-    let userName = localStorage.getItem('di_userName') || '';
-    let infodoseName = localStorage.getItem('di_infodoseName') || '';
-    const CRYSTAL_KEY = 'di_cristalizados';
-
-    const createEl = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e; };
-    const splitBlocks = text => {
-      if (!text || !text.trim()) return [['Sem conteúdo de treinamento.','','']];
-      let paras = text.split(/\n\s*\n/).filter(p=>p.trim());
-      if (paras.length % 3 !== 0) {
-        const sens = paras.join(' ').match(/[^\.!\?]+[\.!\?]+/g) || [paras.join(' ')];
-        paras = sens.map(s=>s.trim());
-      }
-      const groups = [];
-      for (let i=0;i<paras.length;i+=3) groups.push(paras.slice(i,i+3));
-      return groups;
-    };
-
-    // TTS
-    const speakText = (txt, onend)=> {
-      if (!txt) { if (onend) onend(); return; }
-      const u = new SpeechSynthesisUtterance(txt);
-      u.lang = 'pt-BR'; u.rate = 0.99; u.pitch = 1.1; u.volume = 1;
-      if (window._vozes) u.voice = window._vozes.find(v=>v.lang==='pt-BR') || window._vozes[0];
-      if (onend) u.onend = onend;
-      speechSynthesis.speak(u);
-    };
-
-    const updateTopInfo = () => {
-      const du = document.getElementById('displayUser');
-      const di = document.getElementById('displayInfodose');
-      if (du) du.innerText = 'User: ' + (userName || '—');
-      if (di) di.innerText = 'Infodose: ' + (infodoseName || '—');
-    };
-
-    const updateToggleUI = () => {
-      const tb = document.getElementById('toggleBtn');
-      if (tb) tb.classList.toggle('active', assistantEnabled);
-      const as = document.getElementById('assistantActiveCheckbox');
-      const tr = document.getElementById('trainingActiveCheckbox');
-      if (as) as.checked = !!assistantEnabled;
-      if (tr) tr.checked = !!trainingActive;
-    };
-
-    async function loadInitialTraining() {
-      const localTraining = localStorage.getItem('di_trainingText');
-      const localFileName = localStorage.getItem('di_trainingFileName') || '';
-      if (localTraining) {
-        training = localTraining;
-        trainingFileName = localFileName;
-        const tf = document.getElementById('trainingFileName');
-        if (tf) tf.innerText = localFileName || 'treinamento (local)';
-        return;
-      }
-      try {
-        const r = await fetch(TRAINING_FILE_FALLBACK);
-        if (r.ok) {
-          training = await r.text();
-          trainingFileName = TRAINING_FILE_FALLBACK;
-          const tf = document.getElementById('trainingFileName');
-          if (tf) tf.innerText = TRAINING_FILE_FALLBACK;
-        }
-      } catch (e) { /* silent */ }
-    }
-
-    /* === Markdown-enabled paginated renderer === */
-const md = window.markdownit({
-  html: false,         // desativa HTML cru; se quiser permitir HTML, mude para true
-  linkify: true,
-  typographer: true
-});
-
-const renderPaginatedResponse = text => {
-  speechSynthesis.cancel();
-  autoAdvance = true;
-  const respEl = document.getElementById('response');
-  if (!respEl) return;
-  respEl.querySelectorAll('.page:not(.initial)').forEach(p=>p.remove());
-  pages = [];
-  const groups = splitBlocks(text);
-  const titles = ['🎁 Recompensa Inicial','👁️ Exploração e Curiosidade','⚡ Antecipação Vibracional'];
-
-  // toggle sanitization
-  const useSanitize = true; // <<== false se preferir não usar DOMPurify
-
-  groups.forEach((tris, gi) => {
-    const page = createEl('div', gi===0?'page active':'page');
-    tris.forEach((body, j) => {
-      const cls = j===0?'intro': j===1?'middle':'ending';
-      // render markdown -> html
-      let rendered = md.render(body || '');
-      if (useSanitize && window.DOMPurify) rendered = DOMPurify.sanitize(rendered);
-      // create block container
-      const b = createEl('div','response-block '+cls, `
-        <div class="markdown-body">${rendered}</div>
-      `);
-
-      // meta & actions
-      const meta = createEl('div','meta');
-      const crystalBtn = createEl('button','crystal-btn','✶');
-      crystalBtn.title = 'Cristalizar essa mensagem';
-      crystalBtn.addEventListener('click',(ev)=>{ ev.stopPropagation(); cristalizar({ title: titles[j], content: body }); crystalBtn.innerText='✓'; setTimeout(()=> crystalBtn.innerText='✶',1200); });
-      meta.appendChild(crystalBtn);
-      b.appendChild(meta);
-
-      // block-level actions bottom-left (copy)
-      const actions = createEl('div','block-actions');
-      const copyBtn = createEl('button','copy-block-btn','Copiar');
-      copyBtn.addEventListener('click',(ev)=>{
-        ev.stopPropagation();
-        // prefer copying original markdown; but copy rendered plain text if needed
-        navigator.clipboard.writeText(body || b.innerText).then(()=> showToaster('Bloco copiado','success'));
-      });
-      actions.appendChild(copyBtn);
-      b.appendChild(actions);
-
-      // click behavior: speak / expand / callAI (mantendo tua lógica)
-      b.dataset.state = '';
-      b.addEventListener('click', () => {
-        if (!b.dataset.state) {
-          speechSynthesis.cancel();
-          // pega texto plano (sem tags)
-          const plain = Array.from(b.querySelectorAll('p, li')).map(n => n.innerText).join(' ');
-          speakText(plain);
-          b.classList.add('clicked');
-          b.dataset.state = 'spoken';
-        } else {
-          b.classList.add('expanded');
-          b.dataset.state = '';
-          if (!assistantEnabled) {
-            assistantEnabled = true;
-            localStorage.setItem('di_assistantEnabled','1');
-            if (training && trainingActive) conversation.unshift({ role:'system', content: training });
-            updateToggleUI();
-          }
-          const blockText = `${titles[j]}\n\n${body}`;
-          showLoading('Pulso em Expansão...');
-          speechSynthesis.cancel();
-          speakText('Pulso em Expansão...');
-          conversation.push({ role:'user', content: blockText });
-          callAI();
-        }
-      });
-
-      b.addEventListener('animationend', e => { if (e.animationName==='clickPulse') b.classList.remove('clicked'); });
-
-      page.appendChild(b);
-    });
-
-    page.appendChild(createEl('p','footer-text',`<em>Do seu jeito. <strong>Sempre</strong> único. <strong>Sempre</strong> seu.</em>`));
-    const controls = respEl.querySelector('.response-controls');
-    if (controls) respEl.insertBefore(page, controls);
-    pages.push(page);
-
-    // after DOM insertion, highlight code blocks in this page
-    setTimeout(()=> {
-      try {
-        page.querySelectorAll('pre code').forEach(el => { Prism.highlightElement(el); });
-      } catch(e) {}
-    }, 40);
-  });
-
-  currentPage = 0;
-  const pi = document.getElementById('pageIndicator');
-  if (pi) pi.textContent = `1 / ${pages.length}`;
-  speakPage(0);
-};
-
-    const speakPage = i => {
-      const page = pages[i];
-      if (!page) return;
-      const body = Array.from(page.querySelectorAll('.response-block p')).map(p=>p.innerText).join(' ');
-      speakText(body, () => {
-        if (!autoAdvance) return;
-        if (i < pages.length - 1) {
-          changePage(1);
-          speakPage(i+1);
-        } else {
-          speakText('Do seu jeito, sempre único, sempre seu.');
-        }
-      });
-    };
-    const changePage = offset => {
-      const np = currentPage + offset;
-      if (np<0||np>=pages.length) return;
-      pages[currentPage].classList.remove('active');
-      pages[np].classList.add('active');
-      currentPage = np;
-      const pi = document.getElementById('pageIndicator');
-      if (pi) pi.textContent = `${currentPage+1} / ${pages.length}`;
-    };
-
-    const showLoading = msg => {
-      const respEl = document.getElementById('response');
-      const controls = respEl.querySelector('.response-controls');
-      respEl.querySelectorAll('.page:not(.initial)').forEach(p=>p.remove());
-      const page = createEl('div','page active');
-      page.appendChild(createEl('p','footer-text',msg));
-      if (controls) respEl.insertBefore(page, controls);
-      pages = [page];
-      currentPage = 0;
-      const pi = document.getElementById('pageIndicator');
-      if (pi) pi.textContent = '…';
-    };
-
-    async function callAI() {
-      if (!apiKey) {
-        alert('Por favor, configure sua API Key no botão de configurações.');
-        const sModal = document.getElementById('settingsModal');
-        if (sModal) sModal.classList.add('active');
-        return;
-      }
-
-      const bodyObj = { model: modelName, messages: conversation.slice(), temperature: TEMPERATURE };
-      const messagesToSend = [];
-      if (assistantEnabled && trainingActive && training) messagesToSend.push({ role:'system', content: training });
-      conversation.forEach(m => {
-        if (m.role === 'system') return;
-        messagesToSend.push(m);
-      });
-      bodyObj.messages = messagesToSend;
-
-      try {
-        const resp = await fetch(API_ENDPOINT, {
-          method:'POST',
-          headers:{ 'Authorization':`Bearer ${apiKey}`, 'Content-Type':'application/json' },
-          body: JSON.stringify(bodyObj)
-        });
-        if (!resp.ok) throw new Error('Erro API: ' + resp.status);
-        const data = await resp.json();
-        const answer = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content)
-          ? data.choices[0].message.content.trim()
-          : (data.result || 'Resposta vazia');
-        conversation.push({ role:'assistant', content: answer });
-        renderPaginatedResponse(answer);
-      } catch (err) {
-        console.error(err);
-        const errorMsg = 'O pulso oscilou (Erro de Conexão ou Key inválida). Verifique as configurações.';
-        conversation.push({ role:'assistant', content: errorMsg });
-        renderPaginatedResponse(errorMsg);
-      }
-    }
-
-    async function sendMessage(){
-      const respEl = document.getElementById('response');
-      const initPage = respEl ? respEl.querySelector('.page.initial') : null;
-      if (initPage) initPage.remove();
-
-      const input = document.getElementById('userInput');
-      const raw = input ? input.value.trim() : '';
-      if (!raw) return;
-      if (input) input.value = '';
-
-      speechSynthesis.cancel();
-      speakText('');
-
-      const txt = raw.toLowerCase();
-      if (txt === 'oi dual' || txt === 'oi, dual') {
-        assistantEnabled = true;
-        localStorage.setItem('di_assistantEnabled','1');
-        showLoading('Dual Infodose ativa. Pulso enviado...');
-        if (training && trainingActive) conversation.unshift({ role:'system', content: training });
-        updateToggleUI();
-      } else {
-        showLoading('⚡Pulso enviado...Recebendo Intenção…');
-      }
-
-      conversation.push({ role:'user', content: raw });
-      callAI();
-    }
-
-    function cristalizar({ title, content }) {
-      const list = JSON.parse(localStorage.getItem(CRYSTAL_KEY) || '[]');
-      const item = {
-        id: Date.now(),
-        title: title,
-        content: content,
-        user: userName || '—',
-        infodose: infodoseName || '—',
-        at: new Date().toISOString()
-      };
-      list.unshift(item);
-      localStorage.setItem(CRYSTAL_KEY, JSON.stringify(list));
-      refreshCrystalList();
-    }
-
-    function refreshCrystalList() {
-      const list = JSON.parse(localStorage.getItem(CRYSTAL_KEY) || '[]');
-      const el = document.getElementById('crystalList');
-      if (!el) return;
-      el.innerHTML = '';
-      if (!list.length) {
-        el.innerHTML = '<div class="small">Nenhum cristalizado ainda.</div>';
-        return;
-      }
-      list.forEach(it => {
-        const row = createEl('div','crystal-item');
-        const left = createEl('div','','<strong>'+ (it.title||'—') +'</strong><div class="small">'+(it.infodose || '')+' · '+(new Date(it.at)).toLocaleString()+'</div><div style="margin-top:6px">'+ (it.content.length>220 ? it.content.slice(0,220)+'...' : it.content) +'</div>');
-        const actions = createEl('div','actions');
-        const copyBtn = createEl('button','btn btn-sec','Copiar');
-        copyBtn.addEventListener('click', ()=> { navigator.clipboard.writeText(it.content); });
-        const exportBtn = createEl('button','btn btn-prim','Exportar');
-        exportBtn.addEventListener('click', ()=> {
-          const blob = new Blob([it.content], { type:'text/plain;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a'); a.href = url; a.download = `cristal_${it.id}.txt`; a.click(); URL.revokeObjectURL(url);
-        });
-        const delBtn = createEl('button','btn btn-sec','Apagar');
-        delBtn.addEventListener('click', () => {
-          const arr = JSON.parse(localStorage.getItem(CRYSTAL_KEY) || '[]').filter(x => x.id !== it.id);
-          localStorage.setItem(CRYSTAL_KEY, JSON.stringify(arr));
-          refreshCrystalList();
-        });
-        actions.appendChild(copyBtn); actions.appendChild(exportBtn); actions.appendChild(delBtn);
-        row.appendChild(left); row.appendChild(actions);
-        el.appendChild(row);
-      });
-    }
-
-    function setupSettings() {
-      const modal = document.getElementById('settingsModal');
-      const btn = document.getElementById('settingsBtn');
-      const closeBtn = document.getElementById('cancelSettings');
-      const saveBtn = document.getElementById('saveSettings');
-      const keyInput = document.getElementById('apiKeyInput');
-      const modelInput = document.getElementById('modelInput');
-
-      btn.addEventListener('click', () => {
-        keyInput.value = apiKey;
-        modelInput.value = modelName;
-        modal.classList.add('active');
-      });
-      const closeModal = () => modal.classList.remove('active');
-      closeBtn.addEventListener('click', closeModal);
-      saveBtn.addEventListener('click', () => {
-        apiKey = keyInput.value.trim();
-        modelName = modelInput.value.trim() || modelName;
-        localStorage.setItem('di_apiKey', apiKey);
-        localStorage.setItem('di_modelName', modelName);
-        alert('Conexão Neural Salva.');
-        closeModal();
-      });
-      modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
-    }
-
-    function setupTogglePanel() {
-      const panel = document.getElementById('togglePanel');
-      const btn = document.getElementById('toggleBtn');
-      const closeBtn = document.getElementById('closePanelBtn');
-      const saveBtn = document.getElementById('savePanelBtn');
-      const userInput = document.getElementById('userNameInput');
-      const infodoseInput = document.getElementById('infodoseNameInput');
-      const assistantChk = document.getElementById('assistantActiveCheckbox');
-      const trainingChk = document.getElementById('trainingActiveCheckbox');
-      const fileInput = document.getElementById('trainingUpload');
-      const importBtn = document.getElementById('importTrainingBtn');
-      const exportBtn = document.getElementById('exportTrainingBtn');
-      const trainingNameEl = document.getElementById('trainingFileName');
-
-      btn.addEventListener('click', () => {
-        userInput.value = userName;
-        infodoseInput.value = infodoseName;
-        assistantChk.checked = !!assistantEnabled;
-        trainingChk.checked = !!trainingActive;
-        panel.classList.add('active');
-      });
-      closeBtn.addEventListener('click', ()=> panel.classList.remove('active'));
-      saveBtn.addEventListener('click', () => {
-        userName = userInput.value.trim();
-        infodoseName = infodoseInput.value.trim();
-        assistantEnabled = !!assistantChk.checked;
-        trainingActive = !!trainingChk.checked;
-        localStorage.setItem('di_userName', userName);
-        localStorage.setItem('di_infodoseName', infodoseName);
-        localStorage.setItem('di_assistantEnabled', assistantEnabled ? '1' : '0');
-        localStorage.setItem('di_trainingActive', trainingActive ? '1' : '0');
-        updateTopInfo();
-        updateToggleUI();
-        panel.classList.remove('active');
-      });
-
-      fileInput.addEventListener('change', (e) => {
-        const f = e.target.files[0];
-        if (!f) return;
-        trainingFileName = f.name;
-      });
-
-      importBtn.addEventListener('click', ()=> {
-        const f = fileInput.files[0];
-        if (!f) { alert('Escolha um arquivo .txt para importar.'); return; }
-        const r = new FileReader();
-        r.onload = (ev) => {
-          training = ev.target.result;
-          trainingFileName = f.name || 'uploaded_training.txt';
-          localStorage.setItem('di_trainingText', training);
-          localStorage.setItem('di_trainingFileName', trainingFileName);
-          const tf = document.getElementById('trainingFileName');
-          if (tf) tf.innerText = trainingFileName;
-          alert('Treinamento importado e salvo localmente.');
-        };
-        r.readAsText(f,'utf-8');
-      });
-
-      exportBtn.addEventListener('click', ()=> {
-        if (!training) { alert('Nenhum treinamento presente para exportar.'); return; }
-        const blob = new Blob([training], { type:'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = trainingFileName || 'training_export.txt'; a.click(); URL.revokeObjectURL(url);
-      });
-    }
-
-    function setupCrystalModal() {
-      const btn = document.getElementById('crystalBtn');
-      const modal = document.getElementById('crystalModal');
-      const close = document.getElementById('closeCrystal');
-      const exportAll = document.getElementById('exportAllCrystal');
-      const clearAll = document.getElementById('clearAllCrystal');
-
-      btn.addEventListener('click', () => {
-        refreshCrystalList();
-        modal.classList.add('active');
-      });
-      close.addEventListener('click', ()=> modal.classList.remove('active'));
-      exportAll.addEventListener('click', ()=> {
-        const list = JSON.parse(localStorage.getItem(CRYSTAL_KEY) || '[]');
-        if (!list.length) { alert('Nada para exportar.'); return; }
-        const content = list.map(it => `--- ${it.title} · ${it.at} · ${it.infodose}\n\n${it.content}\n\n`).join('\n');
-        const blob = new Blob([content], { type:'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = `cristalizados_${Date.now()}.txt`; a.click(); URL.revokeObjectURL(url);
-      });
-      clearAll.addEventListener('click', ()=> {
-        if (!confirm('Limpar todos os cristalizados?')) return;
-        localStorage.removeItem(CRYSTAL_KEY);
-        refreshCrystalList();
-      });
-      document.getElementById('crystalModal').addEventListener('click', (e)=> { if (e.target === document.getElementById('crystalModal')) document.getElementById('crystalModal').classList.remove('active'); });
-    }
-
-    /* ---------- Clipboard + other small UI ---------- */
-    document.addEventListener('DOMContentLoaded', async () => {
-      speechSynthesis.onvoiceschanged = () => { window._vozes = speechSynthesis.getVoices(); };
-
-      apiKey = localStorage.getItem('di_apiKey') || apiKey;
-      modelName = localStorage.getItem('di_modelName') || modelName;
-      userName = localStorage.getItem('di_userName') || userName;
-      infodoseName = localStorage.getItem('di_infodoseName') || infodoseName;
-      assistantEnabled = (localStorage.getItem('di_assistantEnabled') === '1') || assistantEnabled;
-      trainingActive = (localStorage.getItem('di_trainingActive') === '0') ? false : trainingActive;
-
-      await loadInitialTraining();
-      updateTopInfo();
-      updateToggleUI();
-      setupSettings();
-      setupTogglePanel();
-      setupCrystalModal();
-
-      // particles init (safe call)
-      try {
-        particlesJS('particles-js',{
-          particles:{ number:{value:40},color:{value:['#0ff','#f0f']}, shape:{type:'circle'},opacity:{value:0.4},size:{value:2.4}, move:{enable:true,speed:1.5} }, retina_detect:true
-        });
-      } catch(e){}
-
-      // eventos básicos
-      const sendBtn = document.getElementById('sendBtn');
-      const userInputEl = document.getElementById('userInput');
-      if (sendBtn) sendBtn.addEventListener('click', sendMessage);
-      if (userInputEl) userInputEl.addEventListener('keypress', e => { if (e.key==='Enter') sendMessage(); });
-      const prevBtn = document.querySelector('[data-action="prev"]');
-      const nextBtn = document.querySelector('[data-action="next"]');
-      if (prevBtn) prevBtn.addEventListener('click', () => changePage(-1));
-      if (nextBtn) nextBtn.addEventListener('click', () => changePage(1));
-
-      const copyBtn = document.querySelector('.copy-button');
-      if (copyBtn) copyBtn.addEventListener('click', () => {
-        const pages = Array.from(document.querySelectorAll('.response-container .page'));
-        const fullText = pages.map(p => p.innerText.trim()).join('\n\n');
-        navigator.clipboard.writeText(fullText);
-      });
-
-      const pasteBtn = document.querySelector('.paste-button');
-      if (pasteBtn) pasteBtn.addEventListener('click', async () => {
-        try {
-          const text = await navigator.clipboard.readText();
-          const inp = document.getElementById('userInput');
-          if (inp) inp.value = text;
-        } catch (err) { console.error('Falha ao colar', err); }
-      });
-
-      // voice quick
-      const voiceBtn = document.getElementById('voiceBtn');
-      if (voiceBtn) voiceBtn.addEventListener('click', ()=>{
-        try {
-          const R = new (window.SpeechRecognition||window.webkitSpeechRecognition)();
-          R.lang='pt-BR'; R.start();
-          R.onresult = e => {
-            document.getElementById('userInput').value = e.results[0][0].transcript;
-            sendMessage();
-          };
-        } catch(e){}
-      });
-    });
-
-    /* === MANTRA ZEN MODE === */
-    const mantraBtn = document.getElementById('mantra-toggle');
-    const mantraText = document.getElementById('mantra-text');
-    let mantraCollapsed = false;
-    const TXT_EXPANDED = `Do seu jeito. <strong>Sempre</strong> único. <strong>Sempre</strong> seu.`;
-    const TXT_COLLAPSED = `USE · TRANSFORME · DEVOLVA`;
-    function swapMantraText(html) {
-      mantraText.classList.add('fade-out');
-      setTimeout(() => {
-        mantraText.innerHTML = html;
-        mantraText.classList.remove('fade-out');
-        mantraText.classList.add('fade-in');
-        setTimeout(() => mantraText.classList.remove('fade-in'), 300);
-      }, 300);
-    }
-    mantraBtn.addEventListener('click', () => {
-      mantraCollapsed = !mantraCollapsed;
-      if (mantraCollapsed) {
-        mantraBtn.classList.add('collapsed');
-        document.body.classList.add('zen-mode');
-        swapMantraText(TXT_COLLAPSED);
-      } else {
-        mantraBtn.classList.remove('collapsed');
-        document.body.classList.remove('zen-mode');
-        swapMantraText(TXT_EXPANDED);
-      }
-    });
-  </script>
-  <!-- BEGIN: Dual Infodose — OpenRouter / LocalStorage Sync Patch (single copy) -->
+<!-- BEGIN: Dual Infodose — OpenRouter / LocalStorage Sync Patch (single copy) -->
   <script>
   (function(){
     function chatSyncOnStorage() {
@@ -1708,6 +1158,556 @@ const renderPaginatedResponse = text => {
       }
     })();
   </script>
+  <!-- Scripts: Chat (keeps globals expected by sync patch) -->
+  <script>
+    /* ---------- Constantes iniciais (Chat module - globals intentionally) ---------- */
+    const TRAINING_FILE_FALLBACK = 'Super_Treinamento_Universal_Dual_Infodose_v1-28.txt';
+    const API_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
+    const TEMPERATURE = 0.2;
+
+    // estado (global; sync patch depends on these names)
+    let training = '';
+    let trainingFileName = '';
+    let assistantEnabled = false;
+    let trainingActive = true; // se false, não inclui 'system' no conversation
+    let conversation = [];
+    let pages = [], currentPage = 0, autoAdvance = true;
+
+    // configs persistidas (globals)
+    let apiKey = localStorage.getItem('di_apiKey') || '';
+    let modelName = localStorage.getItem('di_modelName') || 'meta-llama/llama-3.1-405b-instruct:free';
+    let userName = localStorage.getItem('di_userName') || '';
+    let infodoseName = localStorage.getItem('di_infodoseName') || '';
+    const CRYSTAL_KEY = 'di_cristalizados';
+
+    const createEl = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e; };
+    const splitBlocks = text => {
+      if (!text || !text.trim()) return [['Sem conteúdo de treinamento.','','']];
+      let paras = text.split(/\n\s*\n/).filter(p=>p.trim());
+      if (paras.length % 3 !== 0) {
+        const sens = paras.join(' ').match(/[^\.!\?]+[\.!\?]+/g) || [paras.join(' ')];
+        paras = sens.map(s=>s.trim());
+      }
+      const groups = [];
+      for (let i=0;i<paras.length;i+=3) groups.push(paras.slice(i,i+3));
+      return groups;
+    };
+
+    // TTS
+    const speakText = (txt, onend)=> {
+      if (!txt) { if (onend) onend(); return; }
+      const u = new SpeechSynthesisUtterance(txt);
+      u.lang = 'pt-BR'; u.rate = 0.99; u.pitch = 1.1; u.volume = 1;
+      if (window._vozes) u.voice = window._vozes.find(v=>v.lang==='pt-BR') || window._vozes[0];
+      if (onend) u.onend = onend;
+      speechSynthesis.speak(u);
+    };
+
+    const updateTopInfo = () => {
+      const du = document.getElementById('displayUser');
+      const di = document.getElementById('displayInfodose');
+      if (du) du.innerText = 'User: ' + (userName || '—');
+      if (di) di.innerText = 'Infodose: ' + (infodoseName || '—');
+    };
+
+    const updateToggleUI = () => {
+      const tb = document.getElementById('toggleBtn');
+      if (tb) tb.classList.toggle('active', assistantEnabled);
+      const as = document.getElementById('assistantActiveCheckbox');
+      const tr = document.getElementById('trainingActiveCheckbox');
+      if (as) as.checked = !!assistantEnabled;
+      if (tr) tr.checked = !!trainingActive;
+    };
+
+    async function loadInitialTraining() {
+      const localTraining = localStorage.getItem('di_trainingText');
+      const localFileName = localStorage.getItem('di_trainingFileName') || '';
+      if (localTraining) {
+        training = localTraining;
+        trainingFileName = localFileName;
+        const tf = document.getElementById('trainingFileName');
+        if (tf) tf.innerText = localFileName || 'treinamento (local)';
+        return;
+      }
+      try {
+        const r = await fetch(TRAINING_FILE_FALLBACK);
+        if (r.ok) {
+          training = await r.text();
+          trainingFileName = TRAINING_FILE_FALLBACK;
+          const tf = document.getElementById('trainingFileName');
+          if (tf) tf.innerText = TRAINING_FILE_FALLBACK;
+        }
+      } catch (e) { /* silent */ }
+    }
+
+    /* === Markdown-enabled paginated renderer === */
+const md = window.markdownit({
+  html: false,         // desativa HTML cru; se quiser permitir HTML, mude para true
+  linkify: true,
+  typographer: true
+});
+
+const renderPaginatedResponse = text => {
+  speechSynthesis.cancel();
+  autoAdvance = true;
+  const respEl = document.getElementById('response');
+  if (!respEl) return;
+  respEl.querySelectorAll('.page:not(.initial)').forEach(p=>p.remove());
+  pages = [];
+  const groups = splitBlocks(text);
+  const titles = ['🎁 Recompensa Inicial','👁️ Exploração e Curiosidade','⚡ Antecipação Vibracional'];
+
+  // toggle sanitization
+  const useSanitize = true; // <<== false se preferir não usar DOMPurify
+
+  groups.forEach((tris, gi) => {
+    const page = createEl('div', gi===0?'page active':'page');
+    tris.forEach((body, j) => {
+      const cls = j===0?'intro': j===1?'middle':'ending';
+      // render markdown -> html
+      let rendered = md.render(body || '');
+      if (useSanitize && window.DOMPurify) rendered = DOMPurify.sanitize(rendered);
+      // create block container
+      const b = createEl('div','response-block '+cls, `
+        <div class="markdown-body">${rendered}</div>
+      `);
+
+      // meta & actions
+      const meta = createEl('div','meta');
+      const crystalBtn = createEl('button','crystal-btn','✶');
+      crystalBtn.title = 'Cristalizar essa mensagem';
+      crystalBtn.addEventListener('click',(ev)=>{ ev.stopPropagation(); cristalizar({ title: titles[j], content: body }); crystalBtn.innerText='✓'; setTimeout(()=> crystalBtn.innerText='✶',1200); });
+      meta.appendChild(crystalBtn);
+      b.appendChild(meta);
+
+      // block-level actions bottom-left (copy)
+      const actions = createEl('div','block-actions');
+      const copyBtn = createEl('button','copy-block-btn','Copiar');
+      copyBtn.addEventListener('click',(ev)=>{
+        ev.stopPropagation();
+        // prefer copying original markdown; but copy rendered plain text if needed
+        navigator.clipboard.writeText(body || b.innerText).then(()=> showToaster('Bloco copiado','success'));
+      });
+      actions.appendChild(copyBtn);
+      b.appendChild(actions);
+
+      // click behavior: speak / expand / callAI (mantendo tua lógica)
+      b.dataset.state = '';
+      b.addEventListener('click', () => {
+        if (!b.dataset.state) {
+          speechSynthesis.cancel();
+          // pega texto plano (sem tags)
+          const plain = Array.from(b.querySelectorAll('p, li')).map(n => n.innerText).join(' ');
+          speakText(plain);
+          b.classList.add('clicked');
+          b.dataset.state = 'spoken';
+        } else {
+          b.classList.add('expanded');
+          b.dataset.state = '';
+          if (!assistantEnabled) {
+            assistantEnabled = true;
+            localStorage.setItem('di_assistantEnabled','1');
+            if (training && trainingActive) conversation.unshift({ role:'system', content: training });
+            updateToggleUI();
+          }
+          const blockText = `${titles[j]}\n\n${body}`;
+          showLoading('Pulso em Expansão...');
+          speechSynthesis.cancel();
+          speakText('Pulso em Expansão...');
+          conversation.push({ role:'user', content: blockText });
+          callAI();
+        }
+      });
+
+      b.addEventListener('animationend', e => { if (e.animationName==='clickPulse') b.classList.remove('clicked'); });
+
+      page.appendChild(b);
+    });
+
+    page.appendChild(createEl('p','footer-text',`<em>Do seu jeito. <strong>Sempre</strong> único. <strong>Sempre</strong> seu.</em>`));
+    const controls = respEl.querySelector('.response-controls');
+    if (controls) respEl.insertBefore(page, controls);
+    pages.push(page);
+
+    // after DOM insertion, highlight code blocks in this page
+    setTimeout(()=> {
+      try {
+        page.querySelectorAll('pre code').forEach(el => { Prism.highlightElement(el); });
+      } catch(e) {}
+    }, 40);
+  });
+
+  currentPage = 0;
+  const pi = document.getElementById('pageIndicator');
+  if (pi) pi.textContent = `1 / ${pages.length}`;
+  speakPage(0);
+};
+
+    const speakPage = i => {
+      const page = pages[i];
+      if (!page) return;
+      const body = Array.from(page.querySelectorAll('.response-block p')).map(p=>p.innerText).join(' ');
+      speakText(body, () => {
+        if (!autoAdvance) return;
+        if (i < pages.length - 1) {
+          changePage(1);
+          speakPage(i+1);
+        } else {
+          speakText('Do seu jeito, sempre único, sempre seu.');
+        }
+      });
+    };
+    const changePage = offset => {
+      const np = currentPage + offset;
+      if (np<0||np>=pages.length) return;
+      pages[currentPage].classList.remove('active');
+      pages[np].classList.add('active');
+      currentPage = np;
+      const pi = document.getElementById('pageIndicator');
+      if (pi) pi.textContent = `${currentPage+1} / ${pages.length}`;
+    };
+
+    const showLoading = msg => {
+      const respEl = document.getElementById('response');
+      const controls = respEl.querySelector('.response-controls');
+      respEl.querySelectorAll('.page:not(.initial)').forEach(p=>p.remove());
+      const page = createEl('div','page active');
+      page.appendChild(createEl('p','footer-text',msg));
+      if (controls) respEl.insertBefore(page, controls);
+      pages = [page];
+      currentPage = 0;
+      const pi = document.getElementById('pageIndicator');
+      if (pi) pi.textContent = '…';
+    };
+
+    async function callAI() {
+      if (!apiKey) {
+        alert('Por favor, configure sua API Key no botão de configurações.');
+        const sModal = document.getElementById('settingsModal');
+        if (sModal) sModal.classList.add('active');
+        return;
+      }
+
+      const bodyObj = { model: modelName, messages: conversation.slice(), temperature: TEMPERATURE };
+      const messagesToSend = [];
+      if (assistantEnabled && trainingActive && training) messagesToSend.push({ role:'system', content: training });
+      conversation.forEach(m => {
+        if (m.role === 'system') return;
+        messagesToSend.push(m);
+      });
+      bodyObj.messages = messagesToSend;
+
+      try {
+        const resp = await fetch(API_ENDPOINT, {
+          method:'POST',
+          headers:{ 'Authorization':`Bearer ${apiKey}`, 'Content-Type':'application/json' },
+          body: JSON.stringify(bodyObj)
+        });
+        if (!resp.ok) throw new Error('Erro API: ' + resp.status);
+        const data = await resp.json();
+        const answer = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content)
+          ? data.choices[0].message.content.trim()
+          : (data.result || 'Resposta vazia');
+        conversation.push({ role:'assistant', content: answer });
+        renderPaginatedResponse(answer);
+      } catch (err) {
+        console.error(err);
+        const errorMsg = 'O pulso oscilou (Erro de Conexão ou Key inválida). Verifique as configurações.';
+        conversation.push({ role:'assistant', content: errorMsg });
+        renderPaginatedResponse(errorMsg);
+      }
+    }
+
+    async function sendMessage(){
+      const respEl = document.getElementById('response');
+      const initPage = respEl ? respEl.querySelector('.page.initial') : null;
+      if (initPage) initPage.remove();
+
+      const input = document.getElementById('userInput');
+      const raw = input ? input.value.trim() : '';
+      if (!raw) return;
+      if (input) input.value = '';
+
+      speechSynthesis.cancel();
+      speakText('');
+
+      const txt = raw.toLowerCase();
+      if (txt === 'oi dual' || txt === 'oi, dual') {
+        assistantEnabled = true;
+        localStorage.setItem('di_assistantEnabled','1');
+        showLoading('Dual Infodose ativa. Pulso enviado...');
+        if (training && trainingActive) conversation.unshift({ role:'system', content: training });
+        updateToggleUI();
+      } else {
+        showLoading('⚡Pulso enviado...Recebendo Intenção…');
+      }
+
+      conversation.push({ role:'user', content: raw });
+      callAI();
+    }
+
+    function cristalizar({ title, content }) {
+      const list = JSON.parse(localStorage.getItem(CRYSTAL_KEY) || '[]');
+      const item = {
+        id: Date.now(),
+        title: title,
+        content: content,
+        user: userName || '—',
+        infodose: infodoseName || '—',
+        at: new Date().toISOString()
+      };
+      list.unshift(item);
+      localStorage.setItem(CRYSTAL_KEY, JSON.stringify(list));
+      refreshCrystalList();
+    }
+
+    function refreshCrystalList() {
+      const list = JSON.parse(localStorage.getItem(CRYSTAL_KEY) || '[]');
+      const el = document.getElementById('crystalList');
+      if (!el) return;
+      el.innerHTML = '';
+      if (!list.length) {
+        el.innerHTML = '<div class="small">Nenhum cristalizado ainda.</div>';
+        return;
+      }
+      list.forEach(it => {
+        const row = createEl('div','crystal-item');
+        const left = createEl('div','','<strong>'+ (it.title||'—') +'</strong><div class="small">'+(it.infodose || '')+' · '+(new Date(it.at)).toLocaleString()+'</div><div style="margin-top:6px">'+ (it.content.length>220 ? it.content.slice(0,220)+'...' : it.content) +'</div>');
+        const actions = createEl('div','actions');
+        const copyBtn = createEl('button','btn btn-sec','Copiar');
+        copyBtn.addEventListener('click', ()=> { navigator.clipboard.writeText(it.content); });
+        const exportBtn = createEl('button','btn btn-prim','Exportar');
+        exportBtn.addEventListener('click', ()=> {
+          const blob = new Blob([it.content], { type:'text/plain;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = `cristal_${it.id}.txt`; a.click(); URL.revokeObjectURL(url);
+        });
+        const delBtn = createEl('button','btn btn-sec','Apagar');
+        delBtn.addEventListener('click', () => {
+          const arr = JSON.parse(localStorage.getItem(CRYSTAL_KEY) || '[]').filter(x => x.id !== it.id);
+          localStorage.setItem(CRYSTAL_KEY, JSON.stringify(arr));
+          refreshCrystalList();
+        });
+        actions.appendChild(copyBtn); actions.appendChild(exportBtn); actions.appendChild(delBtn);
+        row.appendChild(left); row.appendChild(actions);
+        el.appendChild(row);
+      });
+    }
+
+    function setupSettings() {
+      const modal = document.getElementById('settingsModal');
+      const btn = document.getElementById('settingsBtn');
+      const closeBtn = document.getElementById('cancelSettings');
+      const saveBtn = document.getElementById('saveSettings');
+      const keyInput = document.getElementById('apiKeyInput');
+      const modelInput = document.getElementById('modelInput');
+
+      btn.addEventListener('click', () => {
+        keyInput.value = apiKey;
+        modelInput.value = modelName;
+        modal.classList.add('active');
+      });
+      const closeModal = () => modal.classList.remove('active');
+      closeBtn.addEventListener('click', closeModal);
+      saveBtn.addEventListener('click', () => {
+        apiKey = keyInput.value.trim();
+        modelName = modelInput.value.trim() || modelName;
+        localStorage.setItem('di_apiKey', apiKey);
+        localStorage.setItem('di_modelName', modelName);
+        alert('Conexão Neural Salva.');
+        closeModal();
+      });
+      modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+    }
+
+    function setupTogglePanel() {
+      const panel = document.getElementById('togglePanel');
+      const btn = document.getElementById('toggleBtn');
+      const closeBtn = document.getElementById('closePanelBtn');
+      const saveBtn = document.getElementById('savePanelBtn');
+      const userInput = document.getElementById('userNameInput');
+      const infodoseInput = document.getElementById('infodoseNameInput');
+      const assistantChk = document.getElementById('assistantActiveCheckbox');
+      const trainingChk = document.getElementById('trainingActiveCheckbox');
+      const fileInput = document.getElementById('trainingUpload');
+      const importBtn = document.getElementById('importTrainingBtn');
+      const exportBtn = document.getElementById('exportTrainingBtn');
+      const trainingNameEl = document.getElementById('trainingFileName');
+
+      btn.addEventListener('click', () => {
+        userInput.value = userName;
+        infodoseInput.value = infodoseName;
+        assistantChk.checked = !!assistantEnabled;
+        trainingChk.checked = !!trainingActive;
+        panel.classList.add('active');
+      });
+      closeBtn.addEventListener('click', ()=> panel.classList.remove('active'));
+      saveBtn.addEventListener('click', () => {
+        userName = userInput.value.trim();
+        infodoseName = infodoseInput.value.trim();
+        assistantEnabled = !!assistantChk.checked;
+        trainingActive = !!trainingChk.checked;
+        localStorage.setItem('di_userName', userName);
+        localStorage.setItem('di_infodoseName', infodoseName);
+        localStorage.setItem('di_assistantEnabled', assistantEnabled ? '1' : '0');
+        localStorage.setItem('di_trainingActive', trainingActive ? '1' : '0');
+        updateTopInfo();
+        updateToggleUI();
+        panel.classList.remove('active');
+      });
+
+      fileInput.addEventListener('change', (e) => {
+        const f = e.target.files[0];
+        if (!f) return;
+        trainingFileName = f.name;
+      });
+
+      importBtn.addEventListener('click', ()=> {
+        const f = fileInput.files[0];
+        if (!f) { alert('Escolha um arquivo .txt para importar.'); return; }
+        const r = new FileReader();
+        r.onload = (ev) => {
+          training = ev.target.result;
+          trainingFileName = f.name || 'uploaded_training.txt';
+          localStorage.setItem('di_trainingText', training);
+          localStorage.setItem('di_trainingFileName', trainingFileName);
+          const tf = document.getElementById('trainingFileName');
+          if (tf) tf.innerText = trainingFileName;
+          alert('Treinamento importado e salvo localmente.');
+        };
+        r.readAsText(f,'utf-8');
+      });
+
+      exportBtn.addEventListener('click', ()=> {
+        if (!training) { alert('Nenhum treinamento presente para exportar.'); return; }
+        const blob = new Blob([training], { type:'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = trainingFileName || 'training_export.txt'; a.click(); URL.revokeObjectURL(url);
+      });
+    }
+
+    function setupCrystalModal() {
+      const btn = document.getElementById('crystalBtn');
+      const modal = document.getElementById('crystalModal');
+      const close = document.getElementById('closeCrystal');
+      const exportAll = document.getElementById('exportAllCrystal');
+      const clearAll = document.getElementById('clearAllCrystal');
+
+      btn.addEventListener('click', () => {
+        refreshCrystalList();
+        modal.classList.add('active');
+      });
+      close.addEventListener('click', ()=> modal.classList.remove('active'));
+      exportAll.addEventListener('click', ()=> {
+        const list = JSON.parse(localStorage.getItem(CRYSTAL_KEY) || '[]');
+        if (!list.length) { alert('Nada para exportar.'); return; }
+        const content = list.map(it => `--- ${it.title} · ${it.at} · ${it.infodose}\n\n${it.content}\n\n`).join('\n');
+        const blob = new Blob([content], { type:'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = `cristalizados_${Date.now()}.txt`; a.click(); URL.revokeObjectURL(url);
+      });
+      clearAll.addEventListener('click', ()=> {
+        if (!confirm('Limpar todos os cristalizados?')) return;
+        localStorage.removeItem(CRYSTAL_KEY);
+        refreshCrystalList();
+      });
+      document.getElementById('crystalModal').addEventListener('click', (e)=> { if (e.target === document.getElementById('crystalModal')) document.getElementById('crystalModal').classList.remove('active'); });
+    }
+
+    /* ---------- Clipboard + other small UI ---------- */
+    document.addEventListener('DOMContentLoaded', async () => {
+      speechSynthesis.onvoiceschanged = () => { window._vozes = speechSynthesis.getVoices(); };
+
+      apiKey = localStorage.getItem('di_apiKey') || apiKey;
+      modelName = localStorage.getItem('di_modelName') || modelName;
+      userName = localStorage.getItem('di_userName') || userName;
+      infodoseName = localStorage.getItem('di_infodoseName') || infodoseName;
+      assistantEnabled = (localStorage.getItem('di_assistantEnabled') === '1') || assistantEnabled;
+      trainingActive = (localStorage.getItem('di_trainingActive') === '0') ? false : trainingActive;
+
+      await loadInitialTraining();
+      updateTopInfo();
+      updateToggleUI();
+      setupSettings();
+      setupTogglePanel();
+      setupCrystalModal();
+
+      // particles init (safe call)
+      try {
+        particlesJS('particles-js',{
+          particles:{ number:{value:40},color:{value:['#0ff','#f0f']}, shape:{type:'circle'},opacity:{value:0.4},size:{value:2.4}, move:{enable:true,speed:1.5} }, retina_detect:true
+        });
+      } catch(e){}
+
+      // eventos básicos
+      const sendBtn = document.getElementById('sendBtn');
+      const userInputEl = document.getElementById('userInput');
+      if (sendBtn) sendBtn.addEventListener('click', sendMessage);
+      if (userInputEl) userInputEl.addEventListener('keypress', e => { if (e.key==='Enter') sendMessage(); });
+      const prevBtn = document.querySelector('[data-action="prev"]');
+      const nextBtn = document.querySelector('[data-action="next"]');
+      if (prevBtn) prevBtn.addEventListener('click', () => changePage(-1));
+      if (nextBtn) nextBtn.addEventListener('click', () => changePage(1));
+
+      const copyBtn = document.querySelector('.copy-button');
+      if (copyBtn) copyBtn.addEventListener('click', () => {
+        const pages = Array.from(document.querySelectorAll('.response-container .page'));
+        const fullText = pages.map(p => p.innerText.trim()).join('\n\n');
+        navigator.clipboard.writeText(fullText);
+      });
+
+      const pasteBtn = document.querySelector('.paste-button');
+      if (pasteBtn) pasteBtn.addEventListener('click', async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          const inp = document.getElementById('userInput');
+          if (inp) inp.value = text;
+        } catch (err) { console.error('Falha ao colar', err); }
+      });
+
+      // voice quick
+      const voiceBtn = document.getElementById('voiceBtn');
+      if (voiceBtn) voiceBtn.addEventListener('click', ()=>{
+        try {
+          const R = new (window.SpeechRecognition||window.webkitSpeechRecognition)();
+          R.lang='pt-BR'; R.start();
+          R.onresult = e => {
+            document.getElementById('userInput').value = e.results[0][0].transcript;
+            sendMessage();
+          };
+        } catch(e){}
+      });
+    });
+
+    /* === MANTRA ZEN MODE === */
+    const mantraBtn = document.getElementById('mantra-toggle');
+    const mantraText = document.getElementById('mantra-text');
+    let mantraCollapsed = false;
+    const TXT_EXPANDED = `Do seu jeito. <strong>Sempre</strong> único. <strong>Sempre</strong> seu.`;
+    const TXT_COLLAPSED = `USE · TRANSFORME · DEVOLVA`;
+    function swapMantraText(html) {
+      mantraText.classList.add('fade-out');
+      setTimeout(() => {
+        mantraText.innerHTML = html;
+        mantraText.classList.remove('fade-out');
+        mantraText.classList.add('fade-in');
+        setTimeout(() => mantraText.classList.remove('fade-in'), 300);
+      }, 300);
+    }
+    mantraBtn.addEventListener('click', () => {
+      mantraCollapsed = !mantraCollapsed;
+      if (mantraCollapsed) {
+        mantraBtn.classList.add('collapsed');
+        document.body.classList.add('zen-mode');
+        swapMantraText(TXT_COLLAPSED);
+      } else {
+        mantraBtn.classList.remove('collapsed');
+        document.body.classList.remove('zen-mode');
+        swapMantraText(TXT_EXPANDED);
+      }
+    });
+  </script>
+  
 
 
 
